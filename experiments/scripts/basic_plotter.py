@@ -232,7 +232,7 @@ def plot_basics(expfilename, timecutoff=0):
     # Left versus right flow and pressure
     # ---------------------------------------------------------------
 
-    fig = plt.figure(figsize=(7, 7))
+    fig = plt.figure(figsize=(8, 7))
     ax0 = fig.add_subplot(111)
     #ax1 = fig.add_subplot(212)
 
@@ -281,7 +281,7 @@ def plot_basics(expfilename, timecutoff=0):
         qtoty = np.linspace(qtot,minflow)
         ax0.plot(qtotx,qtoty, color='silver', ls='--', linewidth=.5)
         ax0.text(np.mean(qtotx)-15,np.mean(qtoty)+10,'%d SLPM'%(qtot), color='k',rotation=-45)
-
+    ax0.plot(np.linspace(minflow,100),np.linspace(minflow,100),color='k', ls='--')
 
 
     if False:
@@ -358,6 +358,10 @@ exps.append(expfilename)
 expfilename = "20260802_162802" #250s
 exps.append(expfilename)
 expfilename = "20260802_161949" #30s
+exps.append(expfilename)
+expfilename = "20260803_151441" #30s
+
+
 exps.append(expfilename)
 
 
