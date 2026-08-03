@@ -135,14 +135,14 @@ def format_axes(axes):
 # Plotting
 # ---------------------------------------------------------------------
 
-def plot_basics(expfilename, timecutoff=0):
+def plot_basics(expfilename, timecutoff=0, plottitle = ''):
     csv_path = DATA_DIR / f"{expfilename}.csv"
 
     df = read_controller_csv(csv_path)
 
     # Keep only repetitions after repetition 0.
+    #df = df[df["repetition"] == 1].copy()
     df = df[df["repetition"] == 1].copy()
-    #df = df[df["repetition"] < 2].copy()
 
     # Apply the optional time cutoff.
     df = df[df["controller_time"] > timecutoff].copy()
@@ -218,7 +218,6 @@ def plot_basics(expfilename, timecutoff=0):
     ax1.set_ylabel("$p$ [bar]", fontsize=ticks_size)
 
     plt.tight_layout()
-
     plotname = f"expdata_time_{expfilename}.png"
 
     plt.savefig(
@@ -235,6 +234,7 @@ def plot_basics(expfilename, timecutoff=0):
     fig = plt.figure(figsize=(8, 7))
     ax0 = fig.add_subplot(111)
     #ax1 = fig.add_subplot(212)
+    ax0.set_title(plottitle,fontsize=ticks_size)
 
     axes = [ax0, ax1]
     format_axes(axes)
@@ -352,19 +352,19 @@ def plot_basics(expfilename, timecutoff=0):
 
 exps = []
 expfilename = "20260802_172137" #60sbis
-exps.append(expfilename)
+exps.append([expfilename,''])
 expfilename = "20260802_162232" #60s
-exps.append(expfilename)
+exps.append([expfilename,''])
 expfilename = "20260802_162802" #250s
-exps.append(expfilename)
+exps.append([expfilename,''])
 expfilename = "20260802_161949" #30s
-exps.append(expfilename)
+exps.append([expfilename,''])
 expfilename = "20260803_151441" #30s
-
-
-exps.append(expfilename)
+exps.append([expfilename,''])
+expfilename = "20260803_172041" #10_20_7.5s_noglue
+exps.append([expfilename,'10_20_7.5_noglue'])
 
 
 
 for exp in exps:
-	plot_basics(exp)
+	plot_basics(expfilename=exp[0],plottitle=exp[1])
