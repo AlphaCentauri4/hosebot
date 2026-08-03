@@ -145,7 +145,7 @@ class AutoGROQS6:
             except Exception as e:
                 # print("jgkerbjkgebkjgebkgje")
                 self.motor.disableTorque()
-                # print(e)
+                print(e)
                 raise RuntimeError
         self.motor.disableTorque()
         self.motor.setOperatingMode(OperatingMode.CURRENT_BASED_POSITION)
@@ -164,4 +164,8 @@ class AutoGROQS6:
         self.motor.disableTorque()
 
     def _getPresentPosition(self):
+        # try:
         return self.motor.getPresentPosition()
+        # except DxlRuntimeError:
+        #     print("No status packets received.")
+        #     return None

@@ -40,6 +40,7 @@ class DataAcquisition:
         as_percent: bool = False,
         output_directory: str | Path = "experiment_data",
         flush_every_n_samples: int = 100,
+        channel_rescale=None
     ):
         self.port = port
         self.baud_rate = baud_rate
@@ -50,6 +51,7 @@ class DataAcquisition:
         self.as_percent = as_percent
         self.output_directory = Path(output_directory)
         self.flush_every_n_samples = flush_every_n_samples
+        self.channel_rescale = dict([channel_names[i], channel_rescale[i]] for i in range(len(channel_names)))
 
         self.ser: Optional[serial.Serial] = None
         self.calibration_averages: dict[str, float] = {}
@@ -179,17 +181,19 @@ class DataAcquisition:
 
     def _normalize(self, name: str, raw_value: int) -> float:
         average = self.calibration_averages[name]
+        scaler = self.channel_rescale[name]
         denominator = self.adc_full_scale - average
         normalized = (raw_value - average) / denominator
-        if self.as_percent:
-            normalized *= 100.0
-        return normalized
+        # if self.as_percent:
+        #     normalized *= 100.0
+        print(scaler)
+        return normalized*scaler
 
     # ------------------------------------------------------------------
     # Background acquisition thread
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, file_name=None) -> None:
         """Open the CSV log and start the background reading thread."""
         if self.ser is None:
             raise RuntimeError("Call connect() before start().")
@@ -199,8 +203,8 @@ class DataAcquisition:
             raise RuntimeError("start() was already called.")
 
         self.output_directory.mkdir(parents=True, exist_ok=True)
-        file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._csv_path = self.output_directory / f"{file_timestamp}.csv"
+        csv_name = file_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._csv_path = self.output_directory / f"{csv_name}.csv"
 
         self._csv_file = self._csv_path.open("w", newline="", encoding="utf-8")
         self._csv_writer = csv.writer(self._csv_file)
@@ -231,7 +235,7 @@ class DataAcquisition:
 
             row = [f"{time_s:.6f}", elapsed_us]
             for raw, norm in zip(channel_values, normalized_values):
-                row.append(raw)
+                # row.append(raw)
                 row.append(f"{norm:.8f}")
             self._csv_writer.writerow(row)
 

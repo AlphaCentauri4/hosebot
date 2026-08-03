@@ -78,7 +78,7 @@ def main() -> None:
     pid.sample_time = PID_SAMPLE_TIME_S
     pid.output_limits = (0, 1)   # setPercentagePosition only accepts [0, 1]
 
-    output_directory = Path("exp2")
+    output_directory = Path("data/exp2")
 
     output_directory.mkdir(parents=True, exist_ok=True)
     file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

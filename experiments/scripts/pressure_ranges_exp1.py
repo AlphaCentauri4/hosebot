@@ -71,7 +71,7 @@ def main() -> None:
 
     motor.setPercentagePosition(1)
 
-    output_directory = Path("exp1")
+    output_directory = Path("data/exp1")
 
     output_directory.mkdir(parents=True, exist_ok=True)
     file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
