@@ -1,6 +1,6 @@
 #   To run this script
 #
-#   python calibrate_opencvtriangle.py --source 20260803_180357_10_20_75_glue.MOV --output 20260803_180357_10_20_75_glue.json --length-per-pixel 0.075 --length-unit mm
+#   python calibrate_opencvtriangle.py --source 20260803_180357_10_20_7.5_glue.MOV --output 20260803_180357_10_20_7.5_glue.json --length-per-pixel 0.075 --length-unit mm
 
 #
 #
@@ -19,22 +19,33 @@ CALIBRATION_WINDOW = "Triangle calibration"
 MASK_WINDOW = "Calibrated mask"
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-VIDEOS_DIRECTORY = SCRIPT_DIRECTORY / "videos"
-
+DATA_DIRECTORY = SCRIPT_DIRECTORY / "videos"
 
 def nothing(_: int) -> None:
     pass
 
 
 def parse_source(source: str) -> str | int:
+    """Resolve camera indices directly and relative files inside DATA_DIRECTORY."""
     try:
         return int(source)
     except ValueError:
-        return str((VIDEOS_DIRECTORY / source).resolve())
+        source_path = Path(source).expanduser()
+
+        if not source_path.is_absolute():
+            source_path = DATA_DIRECTORY / source_path
+
+        return str(source_path.resolve())
 
 
 def parse_output(output: str) -> Path:
-    return (VIDEOS_DIRECTORY / output).resolve()
+    """Resolve relative JSON output paths inside DATA_DIRECTORY."""
+    output_path = Path(output).expanduser()
+
+    if not output_path.is_absolute():
+        output_path = DATA_DIRECTORY / output_path
+
+    return output_path.resolve()
 
 
 def create_trackbars(initial: dict[str, int]) -> None:
@@ -340,12 +351,18 @@ def main() -> None:
     parser.add_argument(
         "--source",
         required=True,
-        help="Video filename or camera index.",
+        help=(
+            "Video filename inside the videos folder, an absolute path, "
+            "or a camera index."
+        ),
     )
     parser.add_argument(
         "--output",
         default="triangle_calibration.json",
-        help="Output calibration JSON file.",
+        help=(
+            "Output JSON filename inside the videos folder, "
+            "or an absolute path."
+        ),
     )
     parser.add_argument(
         "--frame",
@@ -380,6 +397,8 @@ def main() -> None:
         help="Physical unit, for example mm.",
     )
     args = parser.parse_args()
+
+    DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
     source = parse_source(args.source)
     output_path = parse_output(args.output)
