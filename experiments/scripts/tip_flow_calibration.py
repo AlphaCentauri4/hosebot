@@ -149,6 +149,42 @@ pd.DataFrame({
 #x_fit = np.linspace(x.min(), x.max(), 1000)
 #y_fit = sigmoid(x_fit, *params)
 
+y_low, y_high, x0, k = params
+
+fit_text = (
+    r"$y = y_{\mathrm{low}} + "
+    r"\frac{y_{\mathrm{high}}-y_{\mathrm{low}}}"
+    r"{1+\exp[-k(x-x_0)]}$"
+    "\n"
+    rf"$y_{{\mathrm{{low}}}} = {y_low:.4f}$"
+    "\n"
+    rf"$y_{{\mathrm{{high}}}} = {y_high:.4f}$"
+    "\n"
+    rf"$x_0 = {x0:.4f}$"
+    "\n"
+    rf"$k = {k:.4f}$"
+)
+
+ax0.text(
+    0.98,
+    0.98,
+    fit_text,
+    transform=ax0.transAxes,
+    fontsize=11,
+    va="top",
+    ha="right",
+    #bbox=dict(
+    #    boxstyle="round,pad=0.5",
+    #    facecolor="white",
+    #    edgecolor="gray",
+    #    alpha=0.9,
+    #),
+)
+
+ax0.legend()
+plt.tight_layout()
+
+
 plt.savefig(
     plotname,
     dpi=200,
