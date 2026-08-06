@@ -21,7 +21,7 @@ import itertools as it
 # Configuration
 # ---------------------------------------------------------------------
 
-MOTOR_PORT = "/dev/cu.usbserial-FT9MG6RZ"
+MOTOR_PORT = "COM8"
 MOTOR_ID = 3
 MOTOR_BAUDRATE = 57600
 
@@ -30,7 +30,7 @@ MAX_TORQUE = 16           # Nm
 MAX_CURRENT = MAX_TORQUE / TORQUE_CONST
 MAX_CURRENT = 150
 
-DAQ_PORT = "/dev/cu.usbmodem11301"   # change to e.g. "COM3" on Windows
+DAQ_PORT = "COM9"   # change to e.g. "COM3" on Windows
 PRESSURE_CHANNEL = "A0"             # whichever channel is the pressure sensor
 FLOW_0 = "A1"
 FLOW_1 = "A2"
@@ -128,8 +128,6 @@ def main() -> None:
                         # No sample received yet; skip this cycle.
                         time.sleep(PID_SAMPLE_TIME_S)
                         continue
-                    else:
-                        pressure*=7
                     
                     control = pid(pressure)
                     #print('pset - pexp = %.2f'%(set_pressure-pressure))

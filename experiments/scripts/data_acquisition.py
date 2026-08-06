@@ -186,7 +186,6 @@ class DataAcquisition:
         normalized = (raw_value - average) / denominator
         # if self.as_percent:
         #     normalized *= 100.0
-        print(scaler)
         return normalized*scaler
 
     # ------------------------------------------------------------------
