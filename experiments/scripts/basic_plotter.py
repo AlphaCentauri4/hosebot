@@ -1,370 +1,714 @@
 from pathlib import Path
 import csv
+
 import numpy as np
+import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
-import pandas as pd
-import cmcrameri.cm as cmc
 import matplotlib.colors as colors
+
 
 plt.style.use("seaborn-v0_8-whitegrid")
 matplotlib.rcParams["mathtext.fontset"] = "stix"
 matplotlib.rcParams["font.family"] = "STIXGeneral"
 
 
-# ---------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------
+class ExperimentData:
 
-OUTPUT_DIR = Path(__file__).resolve().parent
-DATA_DIR = OUTPUT_DIR / "experiment_data"
-FIG_DIR = OUTPUT_DIR / "figures"
-FIG_DIR.mkdir(exist_ok=True)
+    def __init__(
+        self,
+        expfilename,
+        data_dir="experiment_data",
+        figure_dir="figures",
+        n_repetitions=1,
+        repetition=0,
+        timecutoff=0,
+    ):
+        self.expfilename = expfilename
+        self.data_dir = Path(data_dir)
+        self.figure_dir = Path(figure_dir)
 
-color_left = "red"
-color_right = "royalblue"
+        self.n_repetitions = n_repetitions
+        self.repetition = repetition
+        self.timecutoff = timecutoff
 
-explinewidth = 0.5
-simlinewidth = 4
-alphasimline = 0.4
-alphaexpline = 1
-plotoffsetQ = 5
-ticks_size = 14
-
-# ---------------------------------------------------------------------
-# Data reading
-# ---------------------------------------------------------------------
-
-def read_controller_csv(csv_path):
-    """
-    Recover only the 8-column controller rows from a mixed CSV file.
-
-    Expected controller columns:
-        repetition, controller_time, p_in,
-        flow_0, flow_1, flow_2, p1, p2
-    """
-
-    controller_columns = [
-        "repetition",
-        "controller_time",
-        "p_in",
-        "flow_0",
-        "flow_1",
-        "flow_2",
-        "p1",
-        "p2",
-    ]
-
-    recovered_rows = []
-    skipped_rows = 0
-
-    with open(csv_path, "r", newline="", encoding="utf-8") as csv_file:
-        reader = csv.reader(csv_file)
-
-        for line_number, row in enumerate(reader, start=1):
-            if not row:
-                continue
-
-            # Ignore headers.
-            if row[0].strip().lower() in {
-                "repetition",
-                "time_s",
-            }:
-                continue
-
-            # Ignore DAQ rows and malformed rows.
-            if len(row) != len(controller_columns):
-                skipped_rows += 1
-                continue
-
-            try:
-                values = [float(value) for value in row]
-            except ValueError:
-                print(f"Skipping invalid row at line {line_number}")
-                skipped_rows += 1
-                continue
-
-            recovered_rows.append(values)
-
-    if not recovered_rows:
-        raise RuntimeError(
-            "No valid 8-column controller rows were found in the CSV file."
+        self.figure_dir.mkdir(
+            parents=True,
+            exist_ok=True,
         )
 
-    df = pd.DataFrame(
-        recovered_rows,
-        columns=controller_columns,
-    )
+        self.color_left = "red"
+        self.color_right = "royalblue"
 
-    df["repetition"] = df["repetition"].astype(int)
+        self.ticks_size = 14
 
-    df = (
-        df
-        .sort_values("controller_time")
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-
-    print(f"Recovered {len(df)} controller rows.")
-    print(f"Ignored {skipped_rows} DAQ or malformed rows.")
-    print(
-        "Available repetitions:",
-        sorted(df["repetition"].unique()),
-    )
-
-    return df
-
-
-# ---------------------------------------------------------------------
-# Plot formatting
-# ---------------------------------------------------------------------
-
-def format_axes(axes):
-    for ax in axes:
-        ax.xaxis.set_tick_params(labelsize=ticks_size)
-        ax.yaxis.set_tick_params(labelsize=ticks_size)
-        ax.grid(False)
-
-        ax.spines["right"].set_visible(False)
-        ax.spines["top"].set_visible(False)
-        ax.spines["left"].set_visible(True)
-        ax.spines["bottom"].set_visible(True)
-
-
-# ---------------------------------------------------------------------
-# Plotting
-# ---------------------------------------------------------------------
-
-def plot_basics(expfilename, timecutoff=0, plottitle = ''):
-    csv_path = DATA_DIR / f"{expfilename}.csv"
-
-    df = read_controller_csv(csv_path)
-
-    # Keep only repetitions after repetition 0.
-    #df = df[df["repetition"] == 1].copy()
-    df = df[df["repetition"] == 1].copy()
-
-    # Apply the optional time cutoff.
-    df = df[df["controller_time"] > timecutoff].copy()
-
-    if df.empty:
-        raise RuntimeError(
-            "No controller data remains after applying the repetition "
-            "and time filters."
+        self.csv_path = (
+            self.data_dir
+            / f"{self.expfilename}.csv"
         )
-    print(df.columns)
-    # ---------------------------------------------------------------
-    # Flow and pressure versus time
-    # ---------------------------------------------------------------
 
-    fig = plt.figure(figsize=(7, 7))
-    ax0 = fig.add_subplot(211)
-    ax1 = fig.add_subplot(212)
+        self.df = self._read_controller_csv()
 
-    axes = [ax0, ax1]
-    format_axes(axes)
+        self.data = self._get_repetition_data(
+            self.repetition
+        )
 
-    for ax in axes:
-        ax.set_xlabel("Time [s]", fontsize=ticks_size)
+    # ------------------------------------------------------------------
+    # Data
+    # ------------------------------------------------------------------
 
-    ax0.plot(
-        df["controller_time"],
-        df["flow_1"] * 200,
-        color=color_left,
-        label="$Q_\\mathrm{left}$",
-    )
+    def _read_controller_csv(self):
 
-    ax0.plot(
-        df["controller_time"],
-        df["flow_2"] * 200,
-        color=color_right,
-        label="$Q_\\mathrm{right}$",
-    )
+        controller_columns = [
+            "time_s",
+            "elapsed_us",
+            "pres_in",
+            "flow_in",
+            "flow_left",
+            "flow_right",
+            "pres_left",
+            "pres_right",
+        ]
 
-    ax0.plot(
-        df["controller_time"],
-        df["flow_1"] * 200 + df["flow_2"] * 200,
-        color='silver',
-        label="$Q_\\mathrm{left}$+$Q_\\mathrm{right}$",
-    )
+        if not self.csv_path.exists():
+            raise FileNotFoundError(
+                f"CSV file not found: {self.csv_path}"
+            )
 
-    ax0.plot(
-        df["controller_time"],
-        df["flow_0"] * 200,
-        color='k',
-        label="$Q_\\mathrm{in}$",
-    )
-    ax0.legend(fontsize=ticks_size)
-    ax1.plot(
-        df["controller_time"],
-        df["p_in"],
-        color="k",
-        label="$p_{\\mathrm{in}}$",
-    )
+        recovered_rows = []
+        skipped_rows = 0
 
-    ax1.plot(
-        df["controller_time"],
-        df["p1"] * 7,
-        color=color_right,
-    )
+        with open(
+            self.csv_path,
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
 
-    ax1.plot(
-        df["controller_time"],
-        df["p2"] * 7,
-        color=color_left,
-    )
+            reader = csv.reader(csv_file)
 
-    ax0.set_ylabel("$Q$ [SLPM]", fontsize=ticks_size)
-    ax1.set_ylabel("$p$ [bar]", fontsize=ticks_size)
+            for line_number, row in enumerate(
+                reader,
+                start=1,
+            ):
 
-    plt.tight_layout()
-    plotname = f"expdata_time_{expfilename}.png"
+                if not row:
+                    continue
 
-    plt.savefig(
-        FIG_DIR / plotname,
+                if row[0].strip().lower() in {
+                    "time_s",
+                    "time",
+                }:
+                    continue
+
+                if len(row) != len(
+                    controller_columns
+                ):
+                    skipped_rows += 1
+                    continue
+
+                try:
+                    values = [
+                        float(value)
+                        for value in row
+                    ]
+
+                except ValueError:
+                    print(
+                        f"Skipping invalid row at line "
+                        f"{line_number}: {row}"
+                    )
+                    skipped_rows += 1
+                    continue
+
+                recovered_rows.append(values)
+
+        if not recovered_rows:
+            raise RuntimeError(
+                f"No valid controller rows were found "
+                f"in {self.csv_path}."
+            )
+
+        df = pd.DataFrame(
+            recovered_rows,
+            columns=controller_columns,
+        )
+
+        df = (
+            df
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        n_rows = len(df)
+
+        rows_per_repetition = (
+            n_rows // self.n_repetitions
+        )
+
+        if rows_per_repetition == 0:
+            raise RuntimeError(
+                f"Number of valid rows ({n_rows}) is too small "
+                f"for {self.n_repetitions} repetitions "
+                f"(need at least 1 row per repetition)."
+            )
+
+        n_rows_used = rows_per_repetition * self.n_repetitions
+        leftover = n_rows - n_rows_used
+
+        if leftover:
+            print(
+                f"Row count ({n_rows}) isn't evenly divisible by "
+                f"{self.n_repetitions} repetitions; dropping the last "
+                f"{leftover} row(s) so each repetition gets "
+                f"{rows_per_repetition} rows."
+            )
+
+        df = df.iloc[:n_rows_used].reset_index(drop=True)
+
+        df["repetition"] = np.repeat(
+            np.arange(self.n_repetitions),
+            rows_per_repetition,
+        )
+
+        df["controller_time"] = (
+            df.groupby("repetition")["time_s"]
+            .transform(
+                lambda values:
+                values - values.iloc[0]
+            )
+        )
+
+        df["experiment_time"] = (
+            df["time_s"] - df["time_s"].iloc[0]
+        )
+
+        print(
+            f"Read {len(df)} controller rows."
+        )
+
+        print(
+            f"Ignored {skipped_rows} malformed rows."
+        )
+
+        print(
+            f"Detected {self.n_repetitions} "
+            f"repetitions with "
+            f"{rows_per_repetition} rows each."
+        )
+
+        return df
+
+    def _get_repetition_data(
+        self,
+        repetition,
+    ):
+
+        if repetition < 0:
+            raise ValueError(
+                "Repetition must be non-negative."
+            )
+
+        if repetition >= self.n_repetitions:
+            raise ValueError(
+                f"Repetition {repetition} does not exist. "
+                f"Valid repetitions are "
+                f"0 through "
+                f"{self.n_repetitions - 1}."
+            )
+
+        df = self.df[
+            self.df["repetition"] == repetition
+        ].copy()
+
+        df = df[
+            df["controller_time"]
+            > self.timecutoff
+        ].copy()
+
+        if df.empty:
+            raise RuntimeError(
+                "No controller data remains after "
+                f"applying repetition={repetition} "
+                f"and timecutoff={self.timecutoff}."
+            )
+
+        return df
+
+    def set_repetition(
+        self,
+        repetition,
+    ):
+
+        self.repetition = repetition
+
+        self.data = self._get_repetition_data(
+            repetition
+        )
+
+    # ------------------------------------------------------------------
+    # Formatting
+    # ------------------------------------------------------------------
+
+    def format_axes(self, axes):
+
+        for ax in axes:
+
+            ax.xaxis.set_tick_params(
+                labelsize=self.ticks_size
+            )
+
+            ax.yaxis.set_tick_params(
+                labelsize=self.ticks_size
+            )
+
+            ax.grid(False)
+
+            ax.spines["right"].set_visible(False)
+            ax.spines["top"].set_visible(False)
+            ax.spines["left"].set_visible(True)
+            ax.spines["bottom"].set_visible(True)
+
+    # ------------------------------------------------------------------
+    # Time history
+    # ------------------------------------------------------------------
+
+    def plot_time_history(
+        self,
+        save=True,
         dpi=200,
-    )
+        full_experiment=True,
+    ):
+        """
+        By default this plots the whole experiment (every repetition,
+        stitched together on a continuous time axis) rather than just
+        the currently-selected repetition. Pass full_experiment=False
+        to plot only self.data (the currently selected repetition) on
+        its own repetition-relative time axis, as before.
+        """
 
-    plt.close(fig)
+        if full_experiment:
+            df = self.df[
+                self.df["experiment_time"]
+                > self.timecutoff
+            ].copy()
+            time_col = "experiment_time"
+        else:
+            df = self.data
+            time_col = "controller_time"
 
-    # ---------------------------------------------------------------
-    # Left versus right flow and pressure
-    # ---------------------------------------------------------------
+        fig = plt.figure(
+            figsize=(7, 7)
+        )
 
-    fig = plt.figure(figsize=(8, 7))
-    ax0 = fig.add_subplot(111)
-    #ax1 = fig.add_subplot(212)
-    ax0.set_title(plottitle,fontsize=ticks_size)
+        ax0 = fig.add_subplot(211)
+        ax1 = fig.add_subplot(212)
 
-    axes = [ax0, ax1]
-    format_axes(axes)
+        self.format_axes(
+            [ax0, ax1]
+        )
 
-    ax0.set_ylabel(
-        "$Q_{\\mathrm{left}}$ [SLPM]",
-        fontsize=ticks_size,
-    )
+        for ax in [ax0, ax1]:
 
-    ax0.set_xlabel(
-        "$Q_{\\mathrm{right}}$ [SLPM]",
-        fontsize=ticks_size,
-    )
-    cmap = cmc.managua #managua roma berlin_r
+            ax.set_xlabel(
+                "Time [s]",
+                fontsize=self.ticks_size,
+            )
 
-    cs = []
+        ax0.plot(
+            df[time_col],
+            df["flow_left"],
+            color=self.color_left,
+            label=r"$Q_{\mathrm{left}}$",
+        )
 
-    #cmap = plt.get_cmap("viridis")
-    norm = plt.Normalize(df["flow_1"].min(), df["flow_1"].max())
+        ax0.plot(
+            df[time_col],
+            df["flow_right"],
+            color=self.color_right,
+            label=r"$Q_{\mathrm{right}}$",
+        )
 
-    for i in range(len(df["flow_1"])):
-        cs.append(cmap(i/len(df["flow_1"])))   
-    print(df.columns)
-    values = df["controller_time"]
+        ax0.plot(
+            df[time_col],
+            (
+                df["flow_left"]
+                + df["flow_right"]
+            ),
+            color="silver",
+            label=r"$Q_{\mathrm{left}} + Q_{\mathrm{right}}$",
+        )
 
-    scatter = ax0.scatter(
-    df["flow_1"] * 200,
-    df["flow_2"] * 200,
-    c=values,
-    cmap=plt.get_cmap("plasma"),#cmc.managua,
-    norm=colors.Normalize(values.min(), values.max()),
-    alpha=0.7,
-    marker="."
-    )
+        ax0.plot(
+            df[time_col],
+            df["flow_in"],
+            color="k",
+            label=r"$Q_{\mathrm{in}}$",
+        )
 
-    cbar = fig.colorbar(scatter, ax=ax0)
-    cbar.set_label("Time [s]")
-    ax0.set_xlim(0,100)
-    ax0.set_ylim(0,100)
-    minflow = 3#min(df["flow_1"].min(),df["flow_2"].min())
-    maxflow = max(df["flow_1"].max(),df["flow_2"].max())
-    for qtot in [30,50,70]:
-        qtotx = np.linspace(minflow, qtot)
-        qtoty = np.linspace(qtot,minflow)
-        ax0.plot(qtotx,qtoty, color='silver', ls='--', linewidth=.5)
-        ax0.text(np.mean(qtotx)-15,np.mean(qtoty)+10,'%d SLPM'%(qtot), color='k',rotation=-45)
-    ax0.plot(np.linspace(minflow,100),np.linspace(minflow,100),color='k', ls='--')
+        ax0.set_ylabel(
+            "$Q$ [SLPM]",
+            fontsize=self.ticks_size,
+        )
 
+        ax0.legend(
+            fontsize=self.ticks_size
+        )
 
-    if False:
-	    ax1.set_ylabel(
-	        "$p_{\\mathrm{left}}$ [bar]",
-	        fontsize=ticks_size,
-	    )
+        ax1.plot(
+            df[time_col],
+            df["pres_in"],
+            color="k",
+            label=r"$p_{\mathrm{in}}$",
+        )
 
-	    ax1.set_xlabel(
-	        "$p_{\\mathrm{right}}$ [bar]",
-	        fontsize=ticks_size,
-	    )
+        ax1.plot(
+            df[time_col],
+            df["pres_left"],
+            color=self.color_left,
+            label=r"$p_{\mathrm{left}}$",
+        )
 
-	    ax1.plot(
-	        df["p1"] * 7,
-	        df["p2"] * 7,
-	        color="k",
-	    )
+        ax1.plot(
+            df[time_col],
+            df["pres_right"],
+            color=self.color_right,
+            label=r"$p_{\mathrm{right}}$",
+        )
 
-    plt.tight_layout()
+        ax1.set_ylabel(
+            "$p$ [bar]",
+            fontsize=self.ticks_size,
+        )
 
-    plotname = f"qq{expfilename}.png"
+        ax1.legend(
+            fontsize=self.ticks_size
+        )
 
-    plt.savefig(
-        FIG_DIR / plotname,
+        if full_experiment and self.n_repetitions > 1:
+
+            rep_starts = (
+                df.groupby("repetition")[time_col]
+                .min()
+                .iloc[1:]
+            )
+
+            for ax in [ax0, ax1]:
+                for rep_start in rep_starts:
+                    ax.axvline(
+                        rep_start,
+                        color="silver",
+                        linestyle="--",
+                        linewidth=0.8,
+                    )
+
+        fig.tight_layout()
+
+        if save:
+
+            suffix = (
+                "all"
+                if full_experiment
+                else f"rep{self.repetition}"
+            )
+
+            filename = (
+                f"expdata_time_"
+                f"{self.expfilename}_"
+                f"{suffix}.png"
+            )
+
+            path = (
+                self.figure_dir
+                / filename
+            )
+
+            fig.savefig(
+                path,
+                dpi=dpi,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Saved figure: {path}"
+            )
+
+        return fig
+
+    # ------------------------------------------------------------------
+    # Flow versus flow
+    # ------------------------------------------------------------------
+
+    def plot_flow_flow(
+        self,
+        title="",
+        save=True,
         dpi=200,
-    )
+    ):
 
-    plt.close(fig)
+        df = self.data
 
-    # ---------------------------------------------------------------
+        fig = plt.figure(
+            figsize=(8, 7)
+        )
+
+        ax = fig.add_subplot(111)
+
+        ax.set_title(
+            title,
+            fontsize=self.ticks_size,
+        )
+
+        self.format_axes([ax])
+
+        ax.set_ylabel(
+            r"$Q_{\mathrm{left}}$ [SLPM]",
+            fontsize=self.ticks_size,
+        )
+
+        ax.set_xlabel(
+            r"$Q_{\mathrm{right}}$ [SLPM]",
+            fontsize=self.ticks_size,
+        )
+
+        values = df["controller_time"]
+
+        scatter = ax.scatter(
+            df["flow_left"],
+            df["flow_right"],
+            c=values,
+            cmap=plt.get_cmap("plasma"),
+            norm=colors.Normalize(
+                values.min(),
+                values.max(),
+            ),
+            alpha=0.7,
+            marker=".",
+        )
+
+        cbar = fig.colorbar(
+            scatter,
+            ax=ax,
+        )
+
+        cbar.set_label(
+            "Time [s]",
+            fontsize=self.ticks_size,
+        )
+
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 100)
+
+        minflow = 3
+
+        for qtot in [30, 50, 70]:
+
+            qtotx = np.linspace(
+                minflow,
+                qtot,
+            )
+
+            qtoty = np.linspace(
+                qtot,
+                minflow,
+            )
+
+            ax.plot(
+                qtotx,
+                qtoty,
+                color="silver",
+                linestyle="--",
+                linewidth=0.5,
+            )
+
+            ax.text(
+                np.mean(qtotx) - 15,
+                np.mean(qtoty) + 10,
+                f"{qtot:d} SLPM",
+                color="k",
+                rotation=-45,
+            )
+
+        ax.plot(
+            np.linspace(
+                minflow,
+                100,
+            ),
+            np.linspace(
+                minflow,
+                100,
+            ),
+            color="k",
+            linestyle="--",
+        )
+
+        fig.tight_layout()
+
+        if save:
+
+            filename = (
+                f"qq_"
+                f"{self.expfilename}_"
+                f"rep{self.repetition}.png"
+            )
+
+            path = (
+                self.figure_dir
+                / filename
+            )
+
+            fig.savefig(
+                path,
+                dpi=dpi,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Saved figure: {path}"
+            )
+
+        return fig
+
+    # ------------------------------------------------------------------
     # Flow versus pressure
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------------
 
-    fig = plt.figure(figsize=(7, 7))
-    ax0 = fig.add_subplot(211)
-    ax1 = fig.add_subplot(212)
-
-    axes = [ax0, ax1]
-    format_axes(axes)
-
-    for ax in axes:
-        ax.set_ylabel("$p$ [bar]", fontsize=ticks_size)
-        ax.set_xlabel("$Q$ [SLPM]", fontsize=ticks_size)
-
-    ax0.plot(
-        df["flow_1"] * 200, df["p1"] * 7,
-        color=color_left,
-    )
-
-    ax1.plot(
-        df["flow_2"] * 200, df["p2"] * 7,
-        color=color_right,
-    )
-
-    plt.tight_layout()
-
-    plotname = f"qp_{expfilename}.png"
-
-    plt.savefig(
-        FIG_DIR / plotname,
+    def plot_flow_pressure(
+        self,
+        save=True,
         dpi=200,
+    ):
+
+        df = self.data
+
+        fig = plt.figure(
+            figsize=(7, 7)
+        )
+
+        ax0 = fig.add_subplot(211)
+        ax1 = fig.add_subplot(212)
+
+        self.format_axes(
+            [ax0, ax1]
+        )
+
+        for ax in [ax0, ax1]:
+
+            ax.set_ylabel(
+                "$p$ [bar]",
+                fontsize=self.ticks_size,
+            )
+
+            ax.set_xlabel(
+                "$Q$ [SLPM]",
+                fontsize=self.ticks_size,
+            )
+
+        ax0.plot(
+            df["flow_left"],
+            df["pres_left"],
+            color=self.color_left,
+        )
+
+        ax1.plot(
+            df["flow_right"],
+            df["pres_right"],
+            color=self.color_right,
+        )
+
+        fig.tight_layout()
+
+        if save:
+
+            filename = (
+                f"qp_"
+                f"{self.expfilename}_"
+                f"rep{self.repetition}.png"
+            )
+
+            path = (
+                self.figure_dir
+                / filename
+            )
+
+            fig.savefig(
+                path,
+                dpi=dpi,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Saved figure: {path}"
+            )
+
+        return fig
+
+    # ------------------------------------------------------------------
+    # All plots
+    # ------------------------------------------------------------------
+
+    def plot_all(
+        self,
+        title="",
+        save=True,
+        show=True,
+        dpi=200,
+        full_experiment=True,
+    ):
+
+        figures = []
+
+        figures.append(
+            self.plot_time_history(
+                save=save,
+                dpi=dpi,
+                full_experiment=full_experiment,
+            )
+        )
+
+        figures.append(
+            self.plot_flow_flow(
+                title=title,
+                save=save,
+                dpi=dpi,
+            )
+        )
+
+        figures.append(
+            self.plot_flow_pressure(
+                save=save,
+                dpi=dpi,
+            )
+        )
+
+        if save:
+            print(
+                f"All figures saved in: "
+                f"{self.figure_dir}"
+            )
+
+        if show:
+            plt.show(block=False)
+            plt.pause(0.1)
+            input("Press Enter to close plots and continue...")
+            plt.close("all")
+            print("Plots closed.")
+
+        return figures
+
+
+if __name__ == "__main__":
+
+    experiment = ExperimentData(
+        expfilename="20260811_173910",
+        data_dir="experiment_data",
+        figure_dir="figures",
+        n_repetitions=1,
+        repetition=0,
     )
 
-    plt.close(fig)
-
-    print(f"Figures saved in: {FIG_DIR}")
-
-exps = []
-expfilename = "20260802_172137" #60sbis
-exps.append([expfilename,''])
-expfilename = "20260802_162232" #60s
-exps.append([expfilename,''])
-expfilename = "20260802_162802" #250s
-exps.append([expfilename,''])
-expfilename = "20260802_161949" #30s
-exps.append([expfilename,''])
-expfilename = "20260803_151441" #30s
-exps.append([expfilename,''])
-expfilename = "20260803_172041" #10_20_7.5s_noglue
-exps.append([expfilename,'10_20_7.5_noglue'])
-
-
-
-for exp in exps:
-	plot_basics(expfilename=exp[0],plottitle=exp[1])
+    experiment.plot_all(
+        title="",
+        save=True,
+        show=True,
+    )

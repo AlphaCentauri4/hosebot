@@ -40,7 +40,8 @@ class DataAcquisition:
         as_percent: bool = False,
         output_directory: str | Path = "experiment_data",
         flush_every_n_samples: int = 100,
-        channel_rescale=None
+        channel_rescale=None,
+        reset_settle_timeout_s: float = 5.0,
     ):
         self.port = port
         self.baud_rate = baud_rate
@@ -52,6 +53,7 @@ class DataAcquisition:
         self.output_directory = Path(output_directory)
         self.flush_every_n_samples = flush_every_n_samples
         self.channel_rescale = dict([channel_names[i], channel_rescale[i]] for i in range(len(channel_names)))
+        self.reset_settle_timeout_s = reset_settle_timeout_s
 
         self.ser: Optional[serial.Serial] = None
         self.calibration_averages: dict[str, float] = {}
@@ -89,6 +91,58 @@ class DataAcquisition:
         # Opening the serial port normally resets the Arduino.
         self.ser.reset_input_buffer()
         print("Serial port opened.")
+
+        self._wait_for_fresh_reset()
+
+    def _wait_for_fresh_reset(self, timeout_s: Optional[float] = None) -> None:
+        """
+        Block until data from a genuinely fresh Arduino boot starts
+        arriving, discarding anything read before that.
+
+        Opening the serial port toggles DTR and resets the Arduino, but
+        bytes already in flight from the *previous* session (still in the
+        Arduino's UART buffer, the OS receive buffer, or the USB-serial
+        chip's FIFO) can keep arriving for a short while after reopening,
+        before the reboot actually takes effect. reset_input_buffer()
+        only clears what's already buffered at the moment it's called, so
+        it can't catch those late-arriving stale bytes on its own.
+
+        A genuine reset shows up as elapsed time dropping (a new boot
+        starts counting from ~0) rather than continuing to climb from
+        wherever the old session left off. We read and discard lines
+        until we see that drop, or until the timeout elapses without ever
+        seeing one (e.g. this really is the very first connection, so
+        there's no stale data to skip past).
+        """
+        if timeout_s is None:
+            timeout_s = self.reset_settle_timeout_s
+
+        deadline = time.monotonic() + timeout_s
+        last_elapsed_us: Optional[int] = None
+
+        while time.monotonic() < deadline:
+            parsed = self._read_one_line()
+            if parsed is None:
+                continue
+
+            _, elapsed_us, _ = parsed
+
+            if last_elapsed_us is None:
+                if elapsed_us < 500_000:
+                    # First line we've seen already looks like a fresh
+                    # boot (well under a second in) - nothing stale to skip.
+                    return
+            elif elapsed_us < last_elapsed_us:
+                # Timer went backwards: this line is from a new boot.
+                return
+
+            last_elapsed_us = elapsed_us
+
+        print(
+            "[DataAcquisition] Warning: never observed a clean Arduino "
+            "reset within the settle window; proceeding with whatever "
+            "data is arriving. Early samples may be stale."
+        )
 
     @staticmethod
     def _show_available_ports() -> None:
@@ -210,7 +264,7 @@ class DataAcquisition:
         header = ["time_s", "elapsed_us"]
         for name in self.channel_names:
             header.append(name)
-            header.append(f"{name}%")
+            # header.append(f"{name}%")
         self._csv_writer.writerow(header)
         self._csv_file.flush()
 
@@ -244,7 +298,7 @@ class DataAcquisition:
 
             with self._lock:
                 self._latest_time_s = time_s
-                self._latest_raw = dict(zip(self.channel_names, channel_values))
+                # self._latest_raw = dict(zip(self.channel_names, channel_values))
                 self._latest_normalized = dict(zip(self.channel_names, normalized_values))
 
     # ------------------------------------------------------------------
@@ -307,8 +361,9 @@ if __name__ == "__main__":
     import pandas as pd
 
     daq = DataAcquisition(
-        port="COM8",
-        channel_names=["A0", "A1", "A2", "A3", "A4"]
+        port="COM7",
+        channel_names=["pres_in", "flow_in", "flow_left", "flow_right", "pres_left", "pres_right"],
+        channel_rescale=[7, 200, 200, 200, 7, 7]
         )
     daq.connect()
     daq.calibrate()
@@ -317,20 +372,22 @@ if __name__ == "__main__":
     try:
         print("Recording for 15 seconds. Press Ctrl+C to stop early.")
         start = time.monotonic()
-        while (time.monotonic() - start) < 15.0:
+        while (time.monotonic() - start) < 2.0:
+            pressure = daq.get_channel("pres_in")
+            print(pressure)
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
         daq.stop()
 
-    data = pd.read_csv(daq._csv_path)
-    fig, ax = plt.subplots(figsize=(12, 6))
-    for name in daq.channel_names:
-        ax.plot(data["time_s"], data[f"{name}%"], label=f"{name}%", linewidth=0.8)
-    ax.set_xlabel("Time from experiment start (s)")
-    ax.set_ylabel("Normalized reading (fraction)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    plt.show()
+    # data = pd.read_csv(daq._csv_path)
+    # fig, ax = plt.subplots(figsize=(12, 6))
+    # for name in daq.channel_names:
+    #     ax.plot(data["time_s"], data[f"{name}%"], label=f"{name}%", linewidth=0.8)
+    # ax.set_xlabel("Time from experiment start (s)")
+    # ax.set_ylabel("Normalized reading (fraction)")
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
+    # fig.tight_layout()
+    # plt.show()
