@@ -12,22 +12,7 @@ from serial.tools import list_ports
 
 
 class DataAcquisition:
-    """
-    Reads two-channel Arduino data over serial, calibrates a zero-reference,
-    logs raw + normalized samples to CSV, and exposes the latest normalized
-    reading for a live control loop to poll.
-
-    Typical usage from another script:
-
-        daq = DataAcquisition(port="/dev/cu.usbmodem1101")
-        daq.connect()
-        daq.calibrate()      # blocks for `calibration_duration_s` seconds
-        daq.start()          # begins background logging thread
-
-        pressure = daq.get_channel("A0")   # non-blocking, latest value
-
-        daq.stop()            # when done
-    """
+    """Serial DAQ with a host ``perf_counter()`` timestamp on every sample."""
 
     def __init__(
         self,
@@ -42,7 +27,7 @@ class DataAcquisition:
         flush_every_n_samples: int = 100,
         channel_rescale=None,
         reset_settle_timeout_s: float = 5.0,
-    ):
+    ) -> None:
         self.port = port
         self.baud_rate = baud_rate
         self.timeout_s = timeout_s
@@ -52,7 +37,13 @@ class DataAcquisition:
         self.as_percent = as_percent
         self.output_directory = Path(output_directory)
         self.flush_every_n_samples = flush_every_n_samples
-        self.channel_rescale = dict([channel_names[i], channel_rescale[i]] for i in range(len(channel_names)))
+
+        if channel_rescale is None:
+            channel_rescale = [1.0] * len(self.channel_names)
+        if len(channel_rescale) != len(self.channel_names):
+            raise ValueError("channel_rescale must match channel_names length.")
+        self.channel_rescale = dict(zip(self.channel_names, channel_rescale))
+
         self.reset_settle_timeout_s = reset_settle_timeout_s
 
         self.ser: Optional[serial.Serial] = None
@@ -62,10 +53,22 @@ class DataAcquisition:
         self._csv_file = None
         self._csv_writer = None
 
+        # Host-clock timestamps are intentionally stored in a sidecar CSV.
+        # This keeps the main controller CSV schema backward-compatible with
+        # basic_plotter.py and any existing analysis scripts.
+        self._timestamps_path: Optional[Path] = None
+        self._timestamps_file = None
+        self._timestamps_writer = None
+
         self._latest_raw: dict[str, int] = {}
         self._latest_normalized: dict[str, float] = {}
         self._latest_time_s: Optional[float] = None
+        self._latest_host_time_s: Optional[float] = None
+
         self._sample_count = 0
+        self._first_sample_host_time_s: Optional[float] = None
+        self._last_sample_host_time_s: Optional[float] = None
+        self._host_time_zero_s: Optional[float] = None
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -76,7 +79,9 @@ class DataAcquisition:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Open the serial port. Raises RuntimeError on failure."""
+        if self.ser is not None and self.ser.is_open:
+            return
+
         print(f"Opening serial port {self.port} at {self.baud_rate} baud...")
         try:
             self.ser = serial.Serial(
@@ -88,32 +93,11 @@ class DataAcquisition:
             self._show_available_ports()
             raise RuntimeError(f"Could not open serial port: {exc}") from exc
 
-        # Opening the serial port normally resets the Arduino.
         self.ser.reset_input_buffer()
         print("Serial port opened.")
-
         self._wait_for_fresh_reset()
 
     def _wait_for_fresh_reset(self, timeout_s: Optional[float] = None) -> None:
-        """
-        Block until data from a genuinely fresh Arduino boot starts
-        arriving, discarding anything read before that.
-
-        Opening the serial port toggles DTR and resets the Arduino, but
-        bytes already in flight from the *previous* session (still in the
-        Arduino's UART buffer, the OS receive buffer, or the USB-serial
-        chip's FIFO) can keep arriving for a short while after reopening,
-        before the reboot actually takes effect. reset_input_buffer()
-        only clears what's already buffered at the moment it's called, so
-        it can't catch those late-arriving stale bytes on its own.
-
-        A genuine reset shows up as elapsed time dropping (a new boot
-        starts counting from ~0) rather than continuing to climb from
-        wherever the old session left off. We read and discard lines
-        until we see that drop, or until the timeout elapses without ever
-        seeing one (e.g. this really is the very first connection, so
-        there's no stale data to skip past).
-        """
         if timeout_s is None:
             timeout_s = self.reset_settle_timeout_s
 
@@ -125,23 +109,19 @@ class DataAcquisition:
             if parsed is None:
                 continue
 
-            _, elapsed_us, _ = parsed
+            _, elapsed_us, _, _ = parsed
 
             if last_elapsed_us is None:
                 if elapsed_us < 500_000:
-                    # First line we've seen already looks like a fresh
-                    # boot (well under a second in) - nothing stale to skip.
                     return
             elif elapsed_us < last_elapsed_us:
-                # Timer went backwards: this line is from a new boot.
                 return
 
             last_elapsed_us = elapsed_us
 
         print(
-            "[DataAcquisition] Warning: never observed a clean Arduino "
-            "reset within the settle window; proceeding with whatever "
-            "data is arriving. Early samples may be stale."
+            "[DataAcquisition] Warning: never observed a clean Arduino reset "
+            "within the settle window; proceeding with incoming data."
         )
 
     @staticmethod
@@ -154,9 +134,16 @@ class DataAcquisition:
         for port in ports:
             print(f"  {port.device}: {port.description}")
 
-    def _read_one_line(self) -> Optional[tuple[float, int, list[int]]]:
-        """Read and parse a single line. Returns (time_s, elapsed_us, values) or None."""
+    def _read_one_line(
+        self,
+    ) -> Optional[tuple[float, int, list[int], float]]:
+        """Return device time, elapsed_us, values, and host perf_counter time."""
+        if self.ser is None:
+            return None
+
         raw_line = self.ser.readline()
+        host_time_s = time.perf_counter()
+
         if not raw_line:
             return None
 
@@ -179,18 +166,13 @@ class DataAcquisition:
             return None
 
         time_s = elapsed_us / 1_000_000.0
-        return time_s, elapsed_us, channel_values
+        return time_s, elapsed_us, channel_values, host_time_s
 
     # ------------------------------------------------------------------
-    # Calibration (blocking, run once before start())
+    # Calibration
     # ------------------------------------------------------------------
 
     def calibrate(self) -> dict[str, float]:
-        """
-        Block for `calibration_duration_s` seconds, collecting samples to
-        compute a per-channel zero-reference average. Must be called after
-        connect() and before start().
-        """
         if self.ser is None:
             raise RuntimeError("Call connect() before calibrate().")
 
@@ -207,7 +189,7 @@ class DataAcquisition:
             parsed = self._read_one_line()
             if parsed is None:
                 continue
-            _, _, channel_values = parsed
+            _, _, channel_values, _ = parsed
             for name, value in zip(self.channel_names, channel_values):
                 sums[name] += value
                 counts[name] += 1
@@ -222,8 +204,8 @@ class DataAcquisition:
             denominator = self.adc_full_scale - average
             if denominator <= 0:
                 raise RuntimeError(
-                    f"Cannot calibrate {name}: calibration average is "
-                    f"{average:.6f}, producing a denominator of {denominator:.6f}."
+                    f"Cannot calibrate {name}: average={average:.6f}, "
+                    f"denominator={denominator:.6f}."
                 )
             self.calibration_averages[name] = average
 
@@ -238,16 +220,17 @@ class DataAcquisition:
         scaler = self.channel_rescale[name]
         denominator = self.adc_full_scale - average
         normalized = (raw_value - average) / denominator
-        # if self.as_percent:
-        #     normalized *= 100.0
-        return normalized*scaler
+        return normalized * scaler
 
     # ------------------------------------------------------------------
-    # Background acquisition thread
+    # Background acquisition
     # ------------------------------------------------------------------
 
-    def start(self, file_name=None) -> None:
-        """Open the CSV log and start the background reading thread."""
+    def start(
+        self,
+        file_name: Optional[str] = None,
+        host_time_zero_s: Optional[float] = None,
+    ) -> None:
         if self.ser is None:
             raise RuntimeError("Call connect() before start().")
         if not self.calibration_averages:
@@ -258,20 +241,58 @@ class DataAcquisition:
         self.output_directory.mkdir(parents=True, exist_ok=True)
         csv_name = file_name or datetime.now().strftime("%Y%m%d_%H%M%S")
         self._csv_path = self.output_directory / f"{csv_name}.csv"
+        self._csv_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._csv_file = self._csv_path.open("w", newline="", encoding="utf-8")
         self._csv_writer = csv.writer(self._csv_file)
+
+        # IMPORTANT: preserve the legacy controller CSV format expected by
+        # basic_plotter.py:
+        # time_s, elapsed_us, pres_in, flow_in, flow_left, flow_right,
+        # pres_left, pres_right
         header = ["time_s", "elapsed_us"]
-        for name in self.channel_names:
-            header.append(name)
-            # header.append(f"{name}%")
+        header.extend(self.channel_names)
         self._csv_writer.writerow(header)
         self._csv_file.flush()
+
+        # Store the shared-host-clock timestamp for every DAQ sample in a
+        # separate sidecar keyed by sample_index.  This gives exact software
+        # synchronization without changing the controller CSV schema.
+        self._timestamps_path = self._csv_path.with_name(
+            f"{self._csv_path.stem}_daq_timestamps.csv"
+        )
+        self._timestamps_file = self._timestamps_path.open(
+            "w", newline="", encoding="utf-8"
+        )
+        self._timestamps_writer = csv.writer(self._timestamps_file)
+        self._timestamps_writer.writerow(
+            [
+                "sample_index",
+                "host_time_s",
+                "host_elapsed_s",
+                "time_s",
+                "elapsed_us",
+            ]
+        )
+        self._timestamps_file.flush()
+
+        self._host_time_zero_s = (
+            time.perf_counter()
+            if host_time_zero_s is None
+            else float(host_time_zero_s)
+        )
+        self._sample_count = 0
+        self._first_sample_host_time_s = None
+        self._last_sample_host_time_s = None
 
         print(f"Logging to: {self._csv_path.resolve()}")
 
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._acquisition_loop, daemon=True)
+        self._thread = threading.Thread(
+            target=self._acquisition_loop,
+            name="DataAcquisition",
+            daemon=True,
+        )
         self._thread.start()
 
     def _acquisition_loop(self) -> None:
@@ -280,41 +301,81 @@ class DataAcquisition:
             if parsed is None:
                 continue
 
-            time_s, elapsed_us, channel_values = parsed
+            # If stop was requested while readline() was blocked, do not append
+            # a sample after the common stop request.
+            if self._stop_event.is_set():
+                break
+
+            time_s, elapsed_us, channel_values, host_time_s = parsed
             normalized_values = [
                 self._normalize(name, value)
                 for name, value in zip(self.channel_names, channel_values)
             ]
 
-            row = [f"{time_s:.6f}", elapsed_us]
-            for raw, norm in zip(channel_values, normalized_values):
-                # row.append(raw)
-                row.append(f"{norm:.8f}")
+            host_elapsed_s = (
+                host_time_s - self._host_time_zero_s
+                if self._host_time_zero_s is not None
+                else float("nan")
+            )
+
+            sample_index = self._sample_count
+
+            # Legacy/main controller CSV.
+            row = [
+                f"{time_s:.6f}",
+                elapsed_us,
+            ]
+            row.extend(f"{value:.8f}" for value in normalized_values)
             self._csv_writer.writerow(row)
+
+            # Synchronization sidecar. sample_index is the zero-based row
+            # number in the data section of the main controller CSV.
+            if self._timestamps_writer is not None:
+                self._timestamps_writer.writerow(
+                    [
+                        sample_index,
+                        f"{host_time_s:.9f}",
+                        f"{host_elapsed_s:.9f}",
+                        f"{time_s:.6f}",
+                        elapsed_us,
+                    ]
+                )
+
+            if self._first_sample_host_time_s is None:
+                self._first_sample_host_time_s = host_time_s
+            self._last_sample_host_time_s = host_time_s
 
             self._sample_count += 1
             if self._sample_count % self.flush_every_n_samples == 0:
                 self._csv_file.flush()
+                if self._timestamps_file is not None:
+                    self._timestamps_file.flush()
 
             with self._lock:
                 self._latest_time_s = time_s
-                # self._latest_raw = dict(zip(self.channel_names, channel_values))
-                self._latest_normalized = dict(zip(self.channel_names, normalized_values))
+                self._latest_host_time_s = host_time_s
+                self._latest_raw = dict(zip(self.channel_names, channel_values))
+                self._latest_normalized = dict(
+                    zip(self.channel_names, normalized_values)
+                )
+
+    def request_stop(self) -> None:
+        """Request acquisition to stop immediately without waiting for file close."""
+        self._stop_event.set()
 
     # ------------------------------------------------------------------
-    # Live polling API (call from your control loop)
+    # Live API
     # ------------------------------------------------------------------
 
     def get_channel(self, name: str) -> Optional[float]:
-        """Latest normalized (calibrated) reading for one channel, or None if no data yet."""
         with self._lock:
             return self._latest_normalized.get(name)
 
     def get_latest(self) -> dict:
-        """Latest normalized readings for all channels, plus timestamp. Non-blocking."""
         with self._lock:
             return {
                 "time_s": self._latest_time_s,
+                "host_time_s": self._latest_host_time_s,
                 "normalized": dict(self._latest_normalized),
                 "raw": dict(self._latest_raw),
             }
@@ -323,22 +384,55 @@ class DataAcquisition:
     def sample_count(self) -> int:
         return self._sample_count
 
+    @property
+    def first_sample_host_time_s(self) -> Optional[float]:
+        return self._first_sample_host_time_s
+
+    @property
+    def last_sample_host_time_s(self) -> Optional[float]:
+        return self._last_sample_host_time_s
+
+    @property
+    def csv_path(self) -> Optional[Path]:
+        return self._csv_path
+
+    @property
+    def timestamps_path(self) -> Optional[Path]:
+        return self._timestamps_path
+
     # ------------------------------------------------------------------
     # Teardown
     # ------------------------------------------------------------------
 
     def stop(self) -> None:
-        """Stop the background thread, flush and close the CSV, close the serial port."""
-        self._stop_event.set()
+        self.request_stop()
+
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=max(2.0, self.timeout_s + 1.0))
+            if self._thread.is_alive():
+                print(
+                    "[DataAcquisition] Warning: acquisition thread did not "
+                    "exit before timeout."
+                )
             self._thread = None
 
         if self._csv_file is not None:
             self._csv_file.flush()
             self._csv_file.close()
             self._csv_file = None
-            print(f"CSV closed: {self._csv_path.resolve()}")
+            if self._csv_path is not None:
+                print(f"CSV closed: {self._csv_path.resolve()}")
+
+        if self._timestamps_file is not None:
+            self._timestamps_file.flush()
+            self._timestamps_file.close()
+            self._timestamps_file = None
+            self._timestamps_writer = None
+            if self._timestamps_path is not None:
+                print(
+                    "DAQ timestamps closed: "
+                    f"{self._timestamps_path.resolve()}"
+                )
 
         if self.ser is not None:
             self.ser.close()
@@ -351,43 +445,3 @@ class DataAcquisition:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.stop()
-
-
-if __name__ == "__main__":
-    # Standalone smoke test: log for 15 seconds then plot, same behavior
-    # as the original single-file script (minus the reprocessing step,
-    # since normalization now happens live).
-    import matplotlib.pyplot as plt
-    import pandas as pd
-
-    daq = DataAcquisition(
-        port="COM7",
-        channel_names=["pres_in", "flow_in", "flow_left", "flow_right", "pres_left", "pres_right"],
-        channel_rescale=[7, 200, 200, 200, 7, 7]
-        )
-    daq.connect()
-    daq.calibrate()
-    daq.start()
-
-    try:
-        print("Recording for 15 seconds. Press Ctrl+C to stop early.")
-        start = time.monotonic()
-        while (time.monotonic() - start) < 2.0:
-            pressure = daq.get_channel("pres_in")
-            print(pressure)
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
-    finally:
-        daq.stop()
-
-    # data = pd.read_csv(daq._csv_path)
-    # fig, ax = plt.subplots(figsize=(12, 6))
-    # for name in daq.channel_names:
-    #     ax.plot(data["time_s"], data[f"{name}%"], label=f"{name}%", linewidth=0.8)
-    # ax.set_xlabel("Time from experiment start (s)")
-    # ax.set_ylabel("Normalized reading (fraction)")
-    # ax.legend()
-    # ax.grid(True, alpha=0.3)
-    # fig.tight_layout()
-    # plt.show()

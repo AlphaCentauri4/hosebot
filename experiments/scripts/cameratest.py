@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-def open_camera(camera_index: int = 1):
+def open_camera(camera_index: int = 0):
     """Open the camera using the preferred backend for the current OS."""
 
     system = platform.system()
@@ -38,7 +38,7 @@ def main() -> None:
     output_folder = Path("captures")
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    camera_index = 1
+    camera_index = 0
     camera = open_camera(camera_index)
 
     if not camera.isOpened():
