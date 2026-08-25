@@ -1,0 +1,43 @@
+{
+    "schema_version": 1,
+    "video": {
+        "source": "/Users/sergiopicella/Desktop/Arduino/FluidicSetup/github/hosebot-main-2/experiments/scripts/videos/calibvideo_v10_18_32bis.mp4",
+        "calibration_frame_index": 1320,
+        "frame_width_px": 1280,
+        "frame_height_px": 720
+    },
+    "roi": {
+        "x": 596,
+        "y": 267,
+        "width": 122,
+        "height": 285
+    },
+    "hsv": {
+        "lower": [
+            27,
+            0,
+            213
+        ],
+        "upper": [
+            49,
+            180,
+            255
+        ]
+    },
+    "morphology": {
+        "open_kernel": 1,
+        "close_kernel": 13,
+        "open_iterations": 1,
+        "close_iterations": 1
+    },
+    "tracking": {
+        "min_area_px2": 500.0,
+        "centerline_sections": 80,
+        "endpoint_fraction": 0.06,
+        "plot_history_seconds": 15.0
+    },
+    "calibration": {
+        "length_per_pixel": 0.075,
+        "length_unit": "mm"
+    }
+}
