@@ -3334,10 +3334,10 @@ def make_tip_flow_plots(
         plot_df["flow_left"],
         plot_df["flow_right"],
         c=values,
-        cmap=cmc.hawaii,
+        cmap=cmc.bam,
         norm=colors.Normalize(
-            values.min(),
-            values.max(),
+            -4,
+            4,
         ),
         alpha=0.55,
         marker=".",

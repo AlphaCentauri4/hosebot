@@ -1,7 +1,7 @@
 #   To run this script
 #
-#   python calibrate_opencvtriangle.py --source calibvideo_v10_18_22bis.mp4 --output calibvideo22.json --length-per-pixel 0.075 --length-unit mm
-#   python calibrate_opencvtriangle.py --source calibvideo_v10_18_32bis.mp4 --output calibvideo32.json --length-per-pixel 0.075 --length-unit mm
+#   python calibrate_opencvtriangle.py --source calibvideo_v10_24_22bis.mp4 --output calibvideo22.json --length-per-pixel 0.075 --length-unit mm
+#   python calibrate_opencvtriangle.py --source calibvideo_v10_24_32bis.mp4 --output calibvideo32.json --length-per-pixel 0.075 --length-unit mm
 
 #
 #
